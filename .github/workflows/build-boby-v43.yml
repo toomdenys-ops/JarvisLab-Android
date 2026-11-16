@@ -1,0 +1,62 @@
+name: Boby V4.3 - WhatsApp Auto Reply
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['BobyLab_Autonomo_V4_3_WhatsApp.zip']
+permissions:
+  contents: read
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract Boby project
+        run: |
+          unzip -oq BobyLab_Autonomo_V4_3_WhatsApp.zip -d .
+          grep -q 'versionName = "4.3-whatsapp-autoreply"' app/build.gradle.kts
+          test -f app/src/main/java/br/com/jarvislab/autonomo/WhatsAppAutoReplyService.kt
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+      - name: Install Android build dependencies
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018' 'cmake;3.22.1'
+          sudo apt-get -o Acquire::Retries=3 update -qq
+          sudo apt-get -o Acquire::Retries=3 install -y -qq ninja-build glslang-tools glslc python3
+      - name: Prepare llama.kt
+        run: |
+          mkdir -p libs
+          git clone --depth 1 https://github.com/tensai-app/llama.kt.git libs/llama.kt
+          git -C libs/llama.kt submodule update --init --recursive
+          bash libs/llama.kt/scripts/bootstrap.sh
+          bash libs/llama.kt/scripts/build-opencl.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('libs/llama.kt/llama-kt/src/main/cpp/CMakeLists.txt'); s=p.read_text(); old='-march=armv8.2-a+dotprod'
+          if s.count(old)!=1: raise SystemExit('Unexpected ARM flags')
+          p.write_text(s.replace(old,'-march=armv8-a'))
+          p=Path('libs/llama.kt/llama-kt/build.gradle.kts'); s=p.read_text(); old='plugins { id("com.android.library") }'
+          new='plugins {\n    id("com.android.library")\n    id("org.jetbrains.kotlin.android")\n}'
+          if old in s: p.write_text(s.replace(old,new,1))
+          elif 'id("org.jetbrains.kotlin.android")' not in s: raise SystemExit('Kotlin plugin setup failed')
+          PY
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Build Boby APK
+        run: gradle --no-daemon --max-workers=2 :app:assembleDebug
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: '2'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BobyLab-V4.3-WhatsApp-AutoReply-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
